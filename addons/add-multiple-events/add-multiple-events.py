@@ -19,6 +19,7 @@
 
 import html
 import traceback
+from gramps.gen.lib.eventtype import EventType
 
 try: # imports used only for type hints
     from typing import Tuple, List, Union
@@ -48,6 +49,12 @@ from gramps.gui.editors.editeventref import EditEventRef
 from gramps.gen.const import GRAMPS_LOCALE as glocale
 _ = glocale.translation.gettext
 
+from gramps.gen.config import config as configman
+
+config = configman.register_manager("add-multiple-events")
+config.register("defaults.event_type", "")
+config.register("defaults.place", "")
+
 def run(db, document, db_obj):
     # type: (DbGeneric, TextBufDoc, Union[Person,Family]) -> None
     try:
@@ -67,6 +74,16 @@ class AddEvents:
         self.document = document
         self.obj = obj
 
+        config.load()
+        self.default_event_type = config.get("defaults.event_type")
+
+        self.default_place_handle = None
+        place_gramps_id = config.get("defaults.place")
+        if place_gramps_id:
+            place = self.db.get_place_from_gramps_id(place_gramps_id)
+            if place:
+                self.default_place_handle = place.handle
+
     def run(self):
         # type: () -> None
 
@@ -84,28 +101,56 @@ class AddEvents:
         self.get_options(self.obj)
 
     def add_events(self):
+        affected_handles = [handle for (handle,checkbox) in self.checks if checkbox.get_active()]
+        print("affected_handles",affected_handles)
+        self.add_events2(self.selected_obj, affected_handles, self.selected_ref.role, self.checkbox_share.get_active())
+        
+    def add_events2(self, selected_obj, affected_handles, role, share):
         # type: () -> None
-        with DbTxn(_("Adding events"), self. db) as self.trans:
-            for person_handle, check in self.checks:
-                if check.get_active():
-                    self.add_object_for_person(person_handle, self.selected_obj)
+        with DbTxn(_("Adding events"), self.db) as self.trans:
+            for person_handle in affected_handles:
+                self.add_object_for_person(person_handle, selected_obj, role, share)
+            if selected_obj.new_event and not share:
+                self.db.remove_event(selected_obj.handle, self.trans)
 
-    def add_object_for_person(self, person_handle, selected_obj):
+
+    def get_birth_date(self, person):
+        birth_ref = person.get_birth_ref()
+        if not birth_ref: return None
+        birth_event = self.db.get_event_from_handle(birth_ref.ref)
+        if not birth_event: return None
+        return birth_event.get_date_object()
+    
+    def get_death_date(self, person):
+        death_ref = person.get_death_ref()
+        if not death_ref: return None
+        death_event = self.db.get_event_from_handle(death_ref.ref)
+        if not death_event: return None
+        return death_event.get_date_object()
+    
+    def add_object_for_person(self, person_handle, selected_obj, role, share):
         # type: (str, Event) -> None
         person = self.db.get_person_from_handle(person_handle)
-        if isinstance(selected_obj, Citation):
-            person.add_citation(selected_obj.handle)
-        if isinstance(selected_obj, Event):
+        if share:
+            event = selected_obj
+        else:
             event = Event(selected_obj)
             event.handle = None
             event.gramps_id = None
+            if event.type == EventType.RESIDENCE and event.date.is_compound():
+                birth_date = self.get_birth_date(person)
+                death_date = self.get_death_date(person)
+                if birth_date and event.date < birth_date:
+                    event.date.set_yr_mon_day(*birth_date.get_ymd(),remove_stop_date=False)
+                if death_date and event.date > death_date:
+                    event.date.set2_yr_mon_day(*death_date.get_ymd())
+                
+                
             self.db.add_event(event, self.trans)
-            eref = EventRef()
-            eref.ref = event.handle
-            eref.role = self.selected_ref.role
-            person.add_event_ref(eref)
-        if isinstance(selected_obj, Note):
-            person.add_note(selected_obj.handle)
+        eref = EventRef()
+        eref.ref = event.handle
+        eref.role = role
+        person.add_event_ref(eref)
         self.db.commit_person(person, self.trans)
 
 
@@ -232,6 +277,16 @@ class AddEvents:
         self.role_label.set_text("Role: " + str(eventref.role))
         self.selected_ref = eventref
         self.selected_obj = event
+
+        self.default_event_type = event.type.xml_str() 
+        config.set("defaults.event_type", self.default_event_type)
+
+        self.default_place_handle = event.place
+        place = self.db.get_place_from_handle(event.place)
+        config.set("defaults.place", place.gramps_id)
+        
+        config.save()
+
         self.ok_button.set_sensitive(True)
 
     def get_participants(self, handle):
@@ -277,6 +332,7 @@ class AddEvents:
         event = sel.run()
         if event:
             try:
+                event.new_event = False
                 ref = EventRef()
                 EditEventRef(
                     self.dbstate, self.uistate, [],
@@ -292,6 +348,11 @@ class AddEvents:
         try:
             ref = EventRef()
             event = Event()
+            event.new_event = True
+            if self.default_event_type:
+                event.type.set_from_xml_str(self.default_event_type)
+            if self.default_place_handle:
+                event.set_place_handle(self.default_place_handle)
             EditEventRef(
                 self.dbstate, self.uistate, [],
                 event, ref, self.eventref_callback)

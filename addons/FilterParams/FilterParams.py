@@ -246,7 +246,8 @@ class Tool(tool.Tool, ManagedWindow):
         self.update_button = glade.get_child_object("update_button")
         self.close_button = glade.get_child_object("close_button")
         self.box = glade.get_child_object("box")
-
+        self.errorMsg = glade.get_child_object("errorMsg")
+        
         if 0: glade.connect_signals(
             {
                 'on_filter_changed': self.on_filter_changed,
@@ -655,6 +656,7 @@ class Tool(tool.Tool, ManagedWindow):
         for (rule, paramindex, entry) in self.entries:
             value = str(entry.get_text())  # type: Any
             rule.list[paramindex] = value
+            #print(value, entry)
         for (rule,use_regex) in self.regexes:
             value = use_regex.get_active()
             rule.use_regex = value
@@ -666,7 +668,7 @@ class Tool(tool.Tool, ManagedWindow):
                 else:
                     rule.list[paramindex] = value
                 entry.set_text(value)
-
+        self.on_filter_changed(self.combo_filters, reload=False)
 
     def getfilter(self, category, filtername):
         # type: (str,str) -> GenericFilter
@@ -681,27 +683,6 @@ class Tool(tool.Tool, ManagedWindow):
         text = text.replace("<","&lt;")
         return text
     
-    def add_frame_and_filter(self, grid, category, filtername, level):
-        # type: (Gtk.Grid,str,str,int) -> Gtk.Frame
-        """
-        Add a new Frame inside grid and a new Grid inside that Frame.
-        Call addfilter to add a new frame inside the new grid to represent filter named 'filtername'.
-        """
-        filter = self.getfilter(category, filtername)
-        if filter is None:  # not found for some reason
-            lbl = Gtk.Label()
-            lbl.set_halign(Gtk.Align.START)
-            lbl.set_markup("<span color='red' size='larger'>" + _("Error: filter '%s' not found in namespace '%s'") % (filtername, category) + "</span>")
-            grid.add(lbl)
-            return
-        caption = "<b>"+self.clean(filtername)+"</b>"
-        if filter.comment.strip():
-            caption += "\n"+self.clean(filter.comment)
-        
-        tooltip = filtername + "\n\n" + filter.comment
-        frame, grid2 = self.add_frame(grid, level, caption, tooltip)
-        self.addfilter(grid2, category, filter, level+1)
-        return frame
     
     def addfilter(self, grid, category, filter, level):
         # type: (Gtk.Grid,str,GenericFilter,int) -> None
@@ -711,15 +692,17 @@ class Tool(tool.Tool, ManagedWindow):
 
         Saves the widget in three arrays (entries, filterparams and regexes).
         """
-        if level > 10:
+        if level > 20:
             lbl = Gtk.Label()
             lbl.set_halign(Gtk.Align.START)
-            lbl.set_markup(
+            msg = (
                 "<span color='red' size='larger'>"
                 + _("Too deeply nested filters")
                 + "</span>"
             )
+            lbl.set_markup(msg)
             grid.add(lbl)
+            self.errorMsg.set_markup(msg)
             return
 
         clsname = filter.__class__.__name__
@@ -755,43 +738,44 @@ class Tool(tool.Tool, ManagedWindow):
             lbl = Gtk.Label(str(level) + ". " + clsname)
             lbl.set_halign(Gtk.Align.START)
 
-            # First check if this rule uses another filter.
-            # This heuristic check might not work if the rule is not using the usual conventions
-            if (len(rule.labels) == 1 and rule.labels[0] == _("Filter name:") or
-                clsname.startswith("Matches") and clsname.endswith("Filter")):
-                if clsname.startswith("Matches") and clsname.endswith("Filter"):
-                    matchcategory = clsname.replace("Matches","").replace("Filter","")
-                    if matchcategory == "":
-                        matchcategory = category
-                else:
-                    matchcategory = category
-                filtername = rule.list[0]
-
-                self.add_frame_and_filter(grid, matchcategory, filtername, level)
-                
-                continue
-
-            # Regular rule
             frame, grid2 = self.add_frame(grid, level, "<b>"+self.clean(_(rule.name))+"</b>\n" + self.clean(_(rule.description)),
                                    tooltip=_(rule.name) + "\n\n" + _(rule.description))
             for paramindex,(caption, value) in enumerate(zip(rule.labels,rule.list)):
                 if type(caption) is tuple:
                     caption = caption[0]
                 lbl = Gtk.Label(caption)
-                lbl.set_halign(Gtk.Align.END)
-                lbl.set_margin_left(10)
-                grid2.add(lbl, False)
+                lbl.set_halign(Gtk.Align.START)
                 self.namespace = category
                 entry = self.get_widgets([caption], filter.get_name())
                 entry.set_text(value)
+                entry.set_halign(Gtk.Align.START)
                 self.entries.append((rule,paramindex,entry))
+
+                #grid2.add(lbl, False)
+                if isinstance(entry, MyFilters):
+                    grid2.add(lbl)
+                else:
+                    grid2.add(lbl, False)
                 grid2.add(entry)
-                if caption == _('ID:'): # link ID fields if they have the same value
+                
+                
+                if isinstance(entry, MyID):  # link ID fields if they have the same value
                     if value in self.values:
                         entry.set_sensitive(False)
                     self.values[value].append((entry,rule,paramindex))
                     entry.entry.connect("changed", self.update_params)
-
+                if isinstance(entry, MyFilters):  
+                    entry.connect("changed", self.update_params)
+                if self.is_filter_reference(clsname, caption, entry):
+                    matchcategory = self.get_matchcategory(clsname, caption, entry)
+                    if matchcategory == "":
+                        matchcategory = category
+                    filtername = rule.list[paramindex]                
+    
+                    self.add_frame_and_filter(grid2, matchcategory, filtername, "", level)
+                else:
+                    pass
+                    
             if rule.allow_regex:
                 use_regex = Gtk.CheckButton(label=_('Use regular expressions'))
                 use_regex.set_tooltip_text(regex_tip)
@@ -799,6 +783,44 @@ class Tool(tool.Tool, ManagedWindow):
                 grid2.add(use_regex)
                 self.regexes.append((rule,use_regex))
 
+        
+    def is_filter_reference(self, clsname, caption, entry):
+        if isinstance(entry, MyFilters): return True
+        if caption.lower().endswith("filter name:"): return True
+        if clsname.startswith("Matches") and clsname.endswith("Filter"): return True  # e.g. MatchesEventFilter
+        if clsname.startswith("Is") and clsname.endswith("FilterMatch"): return True  # e.g. IsChildOfFilterMatch
+        return False
+
+    def get_matchcategory(self, clsname, caption, entry):
+        if caption.lower().endswith(" filter name:"): return caption.split()[0].capitalize()
+        if clsname.startswith("Matches") and clsname.endswith("Filter"): return clsname.replace("Matches","").replace("Filter","")  # e.g. MatchesEventFilter
+        return ""
+
+    def add_frame_and_filter(self, grid, category, filtername, caption, level):
+        # type: (Gtk.Grid,str,str,int) -> Gtk.Frame
+        """
+        Add a new Frame inside grid and a new Grid inside that Frame.
+        Call addfilter to add a new frame inside the new grid to represent filter named 'filtername'.
+        """
+        filter = self.getfilter(category, filtername)
+        if filter is None:  # not found for some reason
+            lbl = Gtk.Label()
+            lbl.set_halign(Gtk.Align.START)
+            msg = "<span color='red' size='larger'>" + _("Error: filter '%s' not found in namespace '%s'") % (filtername, category) + "</span>"
+            lbl.set_markup(msg)
+            grid.add(lbl)
+            self.errorMsg.set_markup(msg)
+            return
+        #caption = "<b>"+self.clean(filtername)+"</b>"
+        if filter.comment.strip():
+            caption += "\n"+self.clean(filter.comment)
+        
+        tooltip = filtername + "\n\n" + filter.comment
+        frame, grid2 = self.add_frame(grid, level, caption, tooltip)
+        self.addfilter(grid2, category, filter, level+1)
+        return frame
+
+        
     def add_frame(self, grid, level, caption, tooltip=None):
         # type: (Gtk.Grid,int,str,str) -> Tuple[Gtk.Frame, Gtk.Grid]
         "Add a new Frame inside grid and a new Grid inside that Frame"
@@ -816,7 +838,14 @@ class Tool(tool.Tool, ManagedWindow):
         frame2.set_tooltip_text(tooltip)
         return frame2, grid2
 
-    def on_filter_changed(self, combo):
+    def update_filter_reference(self, entry, paramindex, rule):
+        referenced_filter_name = entry.get_text()
+        rule.list[paramindex] = referenced_filter_name
+        self.update_params()
+        #self.update()
+        self.filters_changed(self.current_category)
+
+    def on_filter_changed(self, combo, reload=True):
         # type: (Gtk.ComboBox) -> None
 #         import random
 #         random.shuffle(self.colors)
@@ -830,7 +859,7 @@ class Tool(tool.Tool, ManagedWindow):
             return
 
         # load from xml file, any temporary changes are lost
-        reload_custom_filters()
+        if reload: reload_custom_filters()
         self.filterdb = gramps.gen.filters.CustomFilters
 
         self.current_filtername = filtername
@@ -847,8 +876,9 @@ class Tool(tool.Tool, ManagedWindow):
         
 
         caption = "<b>"+filtername+"</b>"
+        self.errorMsg.set_text("")
 
-        frame2 = self.add_frame_and_filter(None, self.current_category, filtername, 0)
+        frame2 = self.add_frame_and_filter(None, self.current_category, filtername, filtername, 0)
         
         self.box.add(frame2)
         self.frame = frame2
