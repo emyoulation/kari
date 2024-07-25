@@ -29,7 +29,7 @@ register(
     GENERAL,
     id="recent-items",
     name=_("Recent items"),
-    description=_("Add recent items to selectors"),
+    description=_("Enhance all Object selectors to include a \"Recent items\" list."),
     version="0.9.0",
     gramps_target_version=major_version,
     status=STABLE,
