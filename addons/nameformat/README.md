@@ -8,7 +8,7 @@ Author: kari.kujansuu@gmail.com<br>
 
 Often it would be useful that a person's name includes both the birth surname and a married surname. In gramps you can define multiple names for a person but only one of them - the primary name - is used when the person is displayed for example in the person list view or charts etc.
 
-This addon patches some Gramps internal classes so the that a person's display name contains also the surnames defined in alternate names.
+This addon patches some Gramps internal classes so the that a person's display name contains also the surnames defined in alternate names. There is no interface. Once the plugin is installed, the display name is changed the next time Gramps is started. The alternate Surname display can be enabled and disabled through the Hide/Unhide feature of the Help -> Plugin Manager. Again, changes will take effect the next time is started. 
 
 For example, consider a person with
 
